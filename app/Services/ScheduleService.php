@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Exceptions\ScheduleConflictException;
 use App\Exceptions\ScheduleLockedException;
 use App\Exceptions\StaleVersionException;
 use App\Models\Line;
@@ -46,13 +45,14 @@ class ScheduleService
 
             $this->assertRange($data['start_date'], $data['finish_date']);
             $this->assertQuota($order, (int) $data['target_qty'], null);
-            $this->assertNoOverlap($lineId, $data['start_date'], $data['finish_date'], null);
+            [$start, $finish] = $this->placeOnLine($lineId, $data['start_date'], $data['finish_date'], null);
 
             $schedule = Schedule::create([
                 'order_id'            => $order->id,
                 'line_id'             => $lineId,
-                'start_date'          => $data['start_date'],
-                'finish_date'         => $data['finish_date'],
+                'start_date'          => $start,
+                'finish_date'         => $finish,
+                'planned_start_date'  => $data['start_date'],
                 'planned_finish_date' => $data['finish_date'],
                 'target_qty'          => (int) $data['target_qty'],
                 'sequence_no'         => 0,
@@ -89,13 +89,14 @@ class ScheduleService
 
             $this->assertRange($data['start_date'], $data['finish_date']);
             $this->assertQuota($order, (int) $data['target_qty'], $schedule->id);
-            $this->assertNoOverlap($newLineId, $data['start_date'], $data['finish_date'], $schedule->id);
+            [$start, $finish] = $this->placeOnLine($newLineId, $data['start_date'], $data['finish_date'], $schedule->id);
 
             $schedule->fill([
                 'order_id'            => $order->id,
                 'line_id'             => $newLineId,
-                'start_date'          => $data['start_date'],
-                'finish_date'         => $data['finish_date'],
+                'start_date'          => $start,
+                'finish_date'         => $finish,
+                'planned_start_date'  => $data['start_date'],
                 'planned_finish_date' => $data['finish_date'],
                 'target_qty'          => (int) $data['target_qty'],
                 'actual_qty'          => 0,
@@ -109,6 +110,7 @@ class ScheduleService
 
             foreach (array_unique([$oldLineId, $newLineId]) as $lid) {
                 $this->layout->resequence($lid);
+                $this->layout->reflow($lid);
             }
             foreach (array_unique([$oldOrderId, $order->id]) as $oid) {
                 $this->layout->refreshOrderStatus($oid);
@@ -130,6 +132,7 @@ class ScheduleService
             $schedule->delete(); // schedule_days cascade
 
             $this->layout->resequence($lineId);
+            $this->layout->reflow($lineId); // schedules behind it move forward again
             $this->layout->refreshOrderStatus($orderId);
         });
     }
@@ -184,20 +187,31 @@ class ScheduleService
         }
     }
 
-    private function assertNoOverlap(int $lineId, string $start, string $finish, ?int $excludeScheduleId): void
+    /**
+     * Find a free spot on the line. If the requested range overlaps another schedule, the start
+     * moves to the day after that schedule finishes (duration stays the same) and the check
+     * repeats until nothing overlaps.
+     *
+     * @return array{0: string, 1: string} [start_date, finish_date]
+     */
+    private function placeOnLine(int $lineId, string $start, string $finish, ?int $excludeScheduleId): array
     {
-        $clash = Schedule::with('order')
-            ->where('line_id', $lineId)
-            ->overlapping($start, $finish)
-            ->when($excludeScheduleId, fn ($q, $id) => $q->where('id', '!=', $id))
-            ->orderBy('start_date')
-            ->first();
+        $from = CarbonImmutable::parse($start);
+        $to   = CarbonImmutable::parse($finish);
+        $span = (int) $from->diffInDays($to);
 
-        if ($clash) {
-            $no = $clash->order?->order_no ?? "#{$clash->id}";
-            throw new ScheduleConflictException(
-                "Tanggal bentrok dengan schedule {$no} ({$clash->start_date->toDateString()} s/d {$clash->finish_date->toDateString()}) di line ini."
-            );
+        while (true) {
+            $clashEnd = Schedule::where('line_id', $lineId)
+                ->overlapping($from->toDateString(), $to->toDateString())
+                ->when($excludeScheduleId, fn ($q, $id) => $q->where('id', '!=', $id))
+                ->max('finish_date');
+
+            if ($clashEnd === null) {
+                return [$from->toDateString(), $to->toDateString()];
+            }
+
+            $from = CarbonImmutable::parse($clashEnd)->addDay();
+            $to   = $from->addDays($span);
         }
     }
 }

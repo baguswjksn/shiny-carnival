@@ -14,7 +14,7 @@ class Schedule extends Model
     public const STATUS_DONE    = 'done';
 
     protected $fillable = [
-        'order_id', 'line_id', 'start_date', 'finish_date', 'planned_finish_date',
+        'order_id', 'line_id', 'start_date', 'finish_date', 'planned_start_date', 'planned_finish_date',
         'target_qty', 'actual_qty', 'sequence_no', 'status',
     ];
 
@@ -26,6 +26,7 @@ class Schedule extends Model
 
     protected $casts = [
         'start_date'          => 'date:Y-m-d',
+        'planned_start_date'  => 'date:Y-m-d',
         'finish_date'         => 'date:Y-m-d',
         'planned_finish_date' => 'date:Y-m-d',
         'target_qty'          => 'integer',
@@ -58,6 +59,16 @@ class Schedule extends Model
     public function hasActuals(): bool
     {
         return ScheduleDay::where('schedule_id', $this->id)->whereNotNull('actual_qty')->exists();
+    }
+
+    /** Days the start was pushed later than requested because the line was busy. */
+    public function getStartDelayDaysAttribute(): int
+    {
+        if (! $this->planned_start_date) {
+            return 0;
+        }
+
+        return max(0, (int) $this->planned_start_date->diffInDays($this->start_date, false));
     }
 
     /** Days the schedule runs past its own planned finish (for the "+N hari" badge). */

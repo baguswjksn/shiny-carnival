@@ -27,6 +27,8 @@ class ScheduleResource extends JsonResource
                 'name' => $this->line->name,
             ]),
             'start_date'          => $this->start_date->toDateString(),
+            'planned_start_date'  => ($this->planned_start_date ?? $this->start_date)->toDateString(),
+            'start_delay_days'    => $this->start_delay_days,
             'finish_date'         => $this->finish_date->toDateString(),
             'planned_finish_date' => $this->planned_finish_date->toDateString(),
             'delay_days'          => $this->delay_days,

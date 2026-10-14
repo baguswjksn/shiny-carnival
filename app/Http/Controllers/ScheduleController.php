@@ -37,16 +37,25 @@ class ScheduleController extends Controller
 
     public function store(StoreScheduleRequest $request): JsonResponse
     {
-        $schedule = $this->service->create($request->validated());
+        $data = $request->validated();
+        $schedule = $this->service->create($data);
 
-        return ApiResponse::ok($this->payload($schedule), 'Schedule berhasil dibuat.', 201);
+        return ApiResponse::ok(
+            $this->payload($schedule),
+            $this->message('Schedule berhasil dibuat.', $schedule, $data['start_date']),
+            201
+        );
     }
 
     public function update(UpdateScheduleRequest $request, Schedule $schedule): JsonResponse
     {
-        $schedule = $this->service->update($schedule, $request->validated());
+        $data = $request->validated();
+        $schedule = $this->service->update($schedule, $data);
 
-        return ApiResponse::ok($this->payload($schedule), 'Schedule berhasil diperbarui.');
+        return ApiResponse::ok(
+            $this->payload($schedule),
+            $this->message('Schedule berhasil diperbarui.', $schedule, $data['start_date'])
+        );
     }
 
     public function destroy(Schedule $schedule): JsonResponse
@@ -54,6 +63,16 @@ class ScheduleController extends Controller
         $this->service->delete($schedule);
 
         return ApiResponse::ok(null, 'Schedule berhasil dihapus.');
+    }
+
+    /** Tell the admin when the start date was moved because the line was already taken. */
+    private function message(string $base, Schedule $schedule, string $requestedStart): string
+    {
+        $actual = $schedule->start_date->toDateString();
+
+        return $actual === $requestedStart
+            ? $base
+            : "{$base} Start bentrok dengan schedule lain di line ini, otomatis digeser ke {$actual}.";
     }
 
     private function payload(Schedule $schedule): array

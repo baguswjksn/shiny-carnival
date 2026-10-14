@@ -46,18 +46,18 @@ class ScheduleCalculator
     }
 
     /**
-     * Rebuild carry-over and effective targets from day 1. Idempotent: running it again on its
-     * own output (with the same actuals) returns the same result.
+     * Rebuild targets from day 1. Idempotent: running it again on its own output
+     * (with the same actuals) returns the same result.
      *
      * Input rows: work_date, base_target, actual_qty (null = not entered), is_extension (optional).
      *
      * Rules:
-     *  - effective target = max(base_target + carry_in, 0)
-     *  - after a day with actual: carry = (base_target + carry_in) - actual
-     *    (negative = surplus; set $applySurplus=false to ignore surplus)
-     *  - a day without actual carries nothing forward (days must be filled in order)
-     *  - if shortfall remains after the last day, extension days are appended
-     *    (capped by $dailyCapacity when set)
+     *  - the daily target of the original range never grows: target = min(base_target, remaining)
+     *  - shortfall is NOT piled onto the next day; it stays in "remaining" and is paid off by
+     *    extension days appended after the last day, each at the original daily rate
+     *    (capped by $dailyCapacity when set), so the range gets longer instead of the quota bigger
+     *  - surplus (actual above target) reduces "remaining"; set $applySurplus=false to ignore it
+     *  - a day without actual is projected as "target met"
      *  - trailing extension days that are no longer needed are dropped
      *
      * @param  array<int, array<string, mixed>> $days
@@ -70,50 +70,47 @@ class ScheduleCalculator
             throw new InvalidArgumentException('A schedule needs at least one day.');
         }
 
-        $cap = ($dailyCapacity !== null && $dailyCapacity > 0) ? $dailyCapacity : null;
         usort($days, fn (array $a, array $b) => strcmp($a['work_date'], $b['work_date']));
 
+        $normal = array_values(array_filter($days, fn (array $d) => ! ($d['is_extension'] ?? false)));
+        if ($normal === []) {
+            throw new InvalidArgumentException('A schedule needs at least one non-extension day.');
+        }
+
+        $remaining = (int) array_sum(array_map(fn (array $d) => (int) $d['base_target'], $normal));
+
+        // Daily rate of the original plan (the last day may hold the remainder, so use the first day).
+        $rate = (int) $normal[0]['base_target'];
+        if ($rate < 1) {
+            $rate = max(1, (int) max(array_column($normal, 'base_target')));
+        }
+        $extRate = ($dailyCapacity !== null && $dailyCapacity > 0) ? min($rate, $dailyCapacity) : $rate;
+
         $rows = [];
-        $carries = [];
-        $carry = 0;
+        $removed = 0;
 
         foreach ($days as $d) {
-            [$row, $carry] = $this->buildDay(
-                $d['work_date'],
-                (int) $d['base_target'],
-                isset($d['actual_qty']) ? (int) $d['actual_qty'] : null,
-                (bool) ($d['is_extension'] ?? false),
-                $carry,
-                $cap,
-                $applySurplus
-            );
-            $rows[] = $row;
-            $carries[] = $carry;
-        }
+            $isExt = (bool) ($d['is_extension'] ?? false);
+            $actual = isset($d['actual_qty']) ? (int) $d['actual_qty'] : null;
 
-        // Drop unused trailing extension days (e.g. admin corrected an actual upwards).
-        $removed = 0;
-        while (count($rows) > 1) {
-            $last = $rows[array_key_last($rows)];
-            if (! $last['is_extension'] || $last['actual_qty'] !== null || $last['target_qty'] !== 0) {
-                break;
+            // Extension day nobody needs any more (and nothing entered on it): drop it.
+            if ($isExt && $actual === null && $remaining <= 0) {
+                $removed++;
+                continue;
             }
-            array_pop($rows);
-            array_pop($carries);
-            $removed++;
-        }
-        $carry = $carries[array_key_last($carries)];
 
-        // Append extension days while a shortfall is left over.
+            $rows[] = $this->buildDay($d['work_date'], $isExt ? 0 : (int) $d['base_target'], $actual, $isExt, $extRate, $applySurplus, $remaining);
+        }
+
+        // Shortfall left after the last day -> append extension days at the daily rate.
         $added = 0;
         $date = CarbonImmutable::parse($rows[array_key_last($rows)]['work_date']);
-        while ($carry > 0) {
+        while ($remaining > 0) {
             if (++$added > self::MAX_EXTENSION_DAYS) {
                 throw new InvalidArgumentException('Extension exceeds ' . self::MAX_EXTENSION_DAYS . ' days.');
             }
             $date = $date->addDay();
-            [$row, $carry] = $this->buildDay($date->toDateString(), 0, null, true, $carry, $cap, $applySurplus);
-            $rows[] = $row;
+            $rows[] = $this->buildDay($date->toDateString(), 0, null, true, $extRate, $applySurplus, $remaining);
         }
 
         return [
@@ -125,40 +122,39 @@ class ScheduleCalculator
         ];
     }
 
-    /** @return array{0: array<string, mixed>, 1: int} [row, carry_out] */
+    /**
+     * Builds one day and reduces $remaining (by reference) by what that day delivers
+     * (actual if entered, otherwise its target as a projection).
+     *
+     * @return array<string, mixed>
+     */
     private function buildDay(
         string $date,
         int $base,
         ?int $actual,
         bool $isExtension,
-        int $carryIn,
-        ?int $cap,
-        bool $applySurplus
+        int $extRate,
+        bool $applySurplus,
+        int &$remaining
     ): array {
-        $raw = $base + $carryIn;
-        $target = max($raw, 0);
-        $capped = $isExtension && $cap !== null;
-        if ($capped) {
-            $target = min($target, $cap);
-        }
+        $left = max($remaining, 0);
+        $target = $isExtension ? min($extRate, $left) : min($base, $left);
 
-        if ($actual !== null) {
-            $carryOut = $raw - $actual;
-            if ($carryOut < 0 && ! $applySurplus) {
-                $carryOut = 0;
-            }
+        if ($actual === null) {
+            $done = $target;
         } else {
-            // Only capped extension days pass leftover on; normal days wait for their actual.
-            $carryOut = $capped ? max($raw - $target, 0) : 0;
+            $done = $applySurplus ? $actual : min($actual, $target);
         }
+        $remaining -= $done;
 
-        return [[
+        return [
             'work_date'    => $date,
             'base_target'  => $base,
-            'carry_in'     => $carryIn,
+            // normal day: negative only when surplus shrinks it; extension day: its whole target
+            'carry_in'     => $target - $base,
             'target_qty'   => $target,
             'actual_qty'   => $actual,
             'is_extension' => $isExtension,
-        ], $carryOut];
+        ];
     }
 }

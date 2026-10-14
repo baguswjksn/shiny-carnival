@@ -36,20 +36,40 @@ class ScheduleCalculatorTest extends TestCase
         $this->assertSame([['work_date' => '2026-10-01', 'base_target' => 50]], $out);
     }
 
-    public function test_shortfall_carries_to_next_day(): void
+    public function test_shortfall_does_not_pile_onto_next_day_but_adds_a_day(): void
     {
+        // 100 over 3 days (33/33/34), day 1 only 20 -> daily targets stay, one extra day for the rest
         $r = $this->calc->recalculate($this->days([20]));
-        $this->assertSame([33, 46, 34], array_column($r['days'], 'target_qty'));
+        $this->assertSame([33, 33, 34, 13], array_column($r['days'], 'target_qty'));
+        $this->assertSame(1, $r['added_days']);
+        $this->assertSame('2026-10-04', $r['finish_date']);
+        $this->assertTrue($r['days'][3]['is_extension']);
+    }
+
+    public function test_example_target_20_over_two_days(): void
+    {
+        $days = $this->calc->distribute('2026-10-01', '2026-10-02', 20);
+        $days[0]['actual_qty'] = 5;
+        $days[1]['actual_qty'] = null;
+
+        $r = $this->calc->recalculate($days);
+        $this->assertSame([10, 10, 5], array_column($r['days'], 'target_qty'));
+        $this->assertSame('2026-10-03', $r['finish_date']);
+
+        // day 2 also short by 5 -> 10 left = exactly one more full day (no bigger quota)
+        $days[1]['actual_qty'] = 5;
+        $r = $this->calc->recalculate($days);
+        $this->assertSame([10, 10, 10], array_column($r['days'], 'target_qty'));
         $this->assertSame('2026-10-03', $r['finish_date']);
     }
 
-    public function test_surplus_reduces_next_day(): void
+    public function test_surplus_shrinks_the_tail_not_the_next_day(): void
     {
         $r = $this->calc->recalculate($this->days([40]));
-        $this->assertSame(26, $r['days'][1]['target_qty']);
+        $this->assertSame([33, 33, 27], array_column($r['days'], 'target_qty'));
 
         $r = $this->calc->recalculate($this->days([40]), null, false);
-        $this->assertSame(33, $r['days'][1]['target_qty']);
+        $this->assertSame([33, 33, 34], array_column($r['days'], 'target_qty'));
     }
 
     public function test_shortfall_on_last_day_extends_range(): void

@@ -107,7 +107,7 @@
           <small>${esc(s.order.buyer)} · ${esc(s.order.style)}</small>
         </td>
         <td>${esc(s.line.code)}</td>
-        <td>${fmtDate(s.start_date)}</td>
+        <td>${fmtDate(s.start_date)}${s.start_delay_days > 0 ? ` <span class="badge warn" title="Start mundur karena line masih dipakai schedule lain (rencana ${fmtDate(s.planned_start_date)})">+${s.start_delay_days} hari</span>` : ''}</td>
         <td>${fmtDate(s.finish_date)}${delay}</td>
         <td class="num">${s.target_qty}</td>
         <td class="num">${perDay}</td>

@@ -37,37 +37,46 @@ class ScheduleLayoutService
     }
 
     /**
-     * After $changed finished later, push following schedules on the same line
-     * so none overlaps. Existing gaps are kept (a schedule only moves if it overlaps).
+     * Put every schedule on the line where it belongs: as close to its planned start as possible,
+     * but never overlapping the schedule before it. Pushes later schedules back when an earlier one
+     * grew, and pulls them forward again (never before planned_start_date) when it shrank or was
+     * removed. Schedules that already have actuals never move.
      *
      * @return \Illuminate\Support\Collection<int, Schedule> schedules that moved
      */
-    public function cascade(Schedule $changed): \Illuminate\Support\Collection
+    public function reflow(int $lineId): \Illuminate\Support\Collection
     {
-        $following = Schedule::where('line_id', $changed->line_id)
-            ->where('sequence_no', '>', $changed->sequence_no)
-            ->orderBy('sequence_no')
-            ->get();
+        $schedules = Schedule::where('line_id', $lineId)->orderBy('sequence_no')->orderBy('id')->get();
 
-        $prevFinish = $changed->finish_date->copy();
         $shifted = collect();
+        $prevFinish = null;
 
-        foreach ($following as $s) {
-            if ($s->start_date->lte($prevFinish)) {
-                $delta = (int) $s->start_date->diffInDays($prevFinish->copy()->addDay(), false);
-                $this->shift($s, $delta);
+        foreach ($schedules as $s) {
+            $desired = ($s->planned_start_date ?? $s->start_date)->copy();
+            if ($prevFinish !== null && $desired->lte($prevFinish)) {
+                $desired = $prevFinish->copy()->addDay();
+            }
+
+            $delta = (int) $s->start_date->diffInDays($desired, false);
+
+            if ($delta > 0 || ($delta < 0 && ! $s->hasActuals())) {
+                $this->shift($s, $delta); // throws if a running schedule would have to be pushed
                 $shifted->push($s);
             }
+
             $prevFinish = $s->finish_date->copy();
         }
 
         return $shifted;
     }
 
-    /** Move a whole schedule (dates + all its days) later by $delta days. */
+    /**
+     * Move a whole schedule (dates + all its days) by $delta days (later if positive, earlier if
+     * negative). planned_* dates are left alone: they are the original plan.
+     */
     public function shift(Schedule $s, int $delta): void
     {
-        if ($delta <= 0) {
+        if ($delta === 0) {
             return;
         }
 
@@ -77,8 +86,10 @@ class ScheduleLayoutService
             throw new ScheduleLockedException("Schedule {$no} sudah berjalan (ada aktual) dan tidak bisa digeser.");
         }
 
-        // Latest day first so the (schedule_id, work_date) unique key never collides.
-        $days = ScheduleDay::where('schedule_id', $s->id)->orderByDesc('work_date')->get();
+        // Move the leading edge first so the (schedule_id, work_date) unique key never collides.
+        $days = ScheduleDay::where('schedule_id', $s->id)
+            ->orderBy('work_date', $delta > 0 ? 'desc' : 'asc')
+            ->get();
         foreach ($days as $d) {
             $d->work_date = $d->work_date->copy()->addDays($delta);
             $d->save();
@@ -86,7 +97,6 @@ class ScheduleLayoutService
 
         $s->start_date = $s->start_date->copy()->addDays($delta);
         $s->finish_date = $s->finish_date->copy()->addDays($delta);
-        $s->planned_finish_date = $s->planned_finish_date->copy()->addDays($delta);
         $s->version = $s->version + 1;
         $s->save();
     }

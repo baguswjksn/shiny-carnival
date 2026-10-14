@@ -11,8 +11,9 @@ use Illuminate\Validation\ValidationException;
 
 /**
  * Records actual output and balances the schedule:
- * shortfall carries into the next day, the range may grow,
- * and later schedules on the same line are pushed back.
+ * shortfall becomes extra days after the last day (daily target stays),
+ * later schedules on the same line are pushed back, and pulled forward again
+ * (down to their planned start) once this one catches up.
  */
 class ScheduleBalancingService
 {
@@ -89,10 +90,8 @@ class ScheduleBalancingService
             $delta = (int) CarbonImmutable::parse($oldFinish)
                 ->diffInDays(CarbonImmutable::parse($result['finish_date']), false);
 
-            $shifted = collect();
-            if ($delta > 0) {
-                $shifted = $this->layout->cascade($schedule);
-            }
+            // Push later schedules back if this one grew, pull them forward again if it shrank.
+            $shifted = $this->layout->reflow($schedule->line_id);
 
             $this->layout->refreshOrderStatus($schedule->order_id);
 
