@@ -30,7 +30,7 @@ Route::middleware('auth')->group(function () {
         Route::get('orders', [OrderController::class, 'list']);
         Route::get('schedules', [ScheduleController::class, 'list']);
 
-        Route::middleware('throttle:120,1')->group(function () {
+        Route::middleware(['admin', 'throttle:120,1'])->group(function () {
             Route::post('lines', [LineController::class, 'store']);
             Route::put('lines/{line}', [LineController::class, 'update']);
             Route::delete('lines/{line}', [LineController::class, 'destroy']);

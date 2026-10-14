@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token() }}">
+    <meta name="can-manage" content="{{ auth()->user()?->isAdmin() ? '1' : '0' }}">
     <title>@yield('title', 'Schedule') · Sewing Scheduler</title>
     <link rel="stylesheet" href="{{ asset('css/app.css') }}">
 </head>

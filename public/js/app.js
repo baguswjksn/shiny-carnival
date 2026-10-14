@@ -3,6 +3,7 @@
   'use strict';
 
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
+  const canManage = document.querySelector('meta[name="can-manage"]')?.content === '1'; // admin only (UI hint; server enforces)
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
 
   class ApiError extends Error {
@@ -118,5 +119,5 @@
     if (close) close.closest('dialog')?.close();
   });
 
-  window.App = { api, ApiError, toast, confirmDialog, setBusy, esc, fmtDate, clearFieldErrors, showFieldErrors };
+  window.App = { canManage, api, ApiError, toast, confirmDialog, setBusy, esc, fmtDate, clearFieldErrors, showFieldErrors };
 })();
